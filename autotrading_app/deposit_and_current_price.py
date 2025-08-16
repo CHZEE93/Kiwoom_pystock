@@ -22,8 +22,20 @@ kiwoom.SetInputValue("조회구분", "2")  # 1: 합산, 2: 개별계좌
 kiwoom.CommRqData("예수금상세현황요청", "opw00001", 0, "2000")
 
 # 데이터 가져오기 (CommGetData 대신 GetCommData 사용)
-deposit = kiwoom.GetCommData("opw00001", "예수금상세현황요청", 0, "예수금")
-print("예수금:", deposit.strip())
+data = kiwoom.block_request(
+    "opw00001",
+    계좌번호=account_num,
+    비밀번호="",
+    비밀번호입력매체구분="00",
+    조회구분=2,
+    output="예수금상세현황",
+    next=0,
+)
+
+# 예수금 정보 출력
+deposit = data["예수금"]
+
+print("예수금:", deposit)
 
 # 종목코드 리스트
 codes = ["005930", "005380"]  # 삼성전자, 현대자동차
