@@ -24,25 +24,25 @@ class MyWindow(QMainWindow, form_class):
         self.button_stop.clicked.connect(self.stop_trading)
 
         # 타이머 설정
-        self.timer = QTimer(self)
+        self.timer = QTimer(self)  # 장 마감 체크용
         self.timer.timeout.connect(self.check_market_time)
-        self.trade_timer = QTimer(self)
+
+        self.trade_timer = QTimer(self)  # 주식 현재가 조회용
         self.trade_timer.timeout.connect(self.trade_stocks)
 
     def start_trading(self):
-        self.textboard.append("[INFO] 조회 시작")
-        self.timer.start(1000)  # 1초마다 check_market_time 호출
-        self.trade_timer.start(1000 * 60)  # 1분마다 trade_stocks 호출
+        self.timer.start(1000 * 60)  # 1분마다 check_market_time 호출
+        self.trade_timer.start(1000)  # 1초마다 trade_stocks 호출
 
     def stop_trading(self):
-        self.timer.stop()  # 타이머 중지
+        self.timer.stop()
         self.trade_timer.stop()
-        self.textboard.append("[INFO] 조회 중단")
 
     def check_market_time(self):
         now = QTime.currentTime()
         if now.toString("HHmm") >= "1500":  # 15시가 되면 매도
-            self.timer.stop()  # 타이머 중지
+            self.timer.stop()
+            self.trade_timer.stop()
             self.sell_all_stocks()
 
     def trade_stocks(self):
@@ -50,28 +50,42 @@ class MyWindow(QMainWindow, form_class):
         k_value = float(self.k_value.text())  # K 값 입력 받기
 
         for code in codes:
-            if code.strip():  # 종목 코드가 비어 있지 않은 경우에만 처리
-                current_price = int(
-                    self.kiwoom.block_request(
-                        "opt10001", 종목코드=code.strip(), output="주식기본정보", next=0
-                    )["현재가"][0].replace(",", "")
-                )
-                yesterday_data = stock.get_market_ohlcv_by_date(
-                    datetime.datetime.now().strftime("%Y%m%d"),
-                    datetime.datetime.now().strftime("%Y%m%d"),
-                    code.strip(),
-                )
-                if not yesterday_data.empty:
-                    high = yesterday_data["고가"][0]
-                    low = yesterday_data["저가"][0]
-                    close = yesterday_data["종가"][0]
-                    target_price = close + (high - low) * k_value
+            code = code.strip()
+            if code:
+                try:
+                    # 현재가 및 종목명 조회
+                    data = self.kiwoom.block_request(
+                        "opt10001", 종목코드=code, output="주식기본정보", next=0
+                    )
+                    name = data["종목명"][0]
+                    current_price = int(data["현재가"][0].replace(",", ""))
 
-                    if current_price > target_price:  # 변동성 돌파 전략에 따라 매수
-                        self.buy_stock(code.strip(), current_price, 1)
+                    # === 현재가 로그 출력 ===
+                    now = datetime.datetime.now().strftime("%H:%M:%S")
+                    self.textboard.append(
+                        f"[{now}] [{code}] [{name}] [{current_price}]"
+                    )
+
+                    # 변동성 돌파 전략 계산
+                    yesterday_data = stock.get_market_ohlcv_by_date(
+                        datetime.datetime.now().strftime("%Y%m%d"),
+                        datetime.datetime.now().strftime("%Y%m%d"),
+                        code,
+                    )
+                    if not yesterday_data.empty:
+                        high = yesterday_data["고가"][0]
+                        low = yesterday_data["저가"][0]
+                        close = yesterday_data["종가"][0]
+                        target_price = close + (high - low) * k_value
+
+                        if current_price > target_price:  # 조건 충족 시 매수
+                            self.buy_stock(code, current_price, 1)
+
+                except Exception as e:
+                    self.textboard.append(f"[Error] {code}: {e}")
 
     def buy_stock(self, code, price, quantity):
-        # 매수 로직 구현 (여기서는 로그만 출력)
+        # 매수 로직 (현재는 로그만 출력)
         name = self.kiwoom.block_request(
             "opt10001", 종목코드=code, output="주식기본정보", next=0
         )["종목명"][0]
@@ -80,7 +94,6 @@ class MyWindow(QMainWindow, form_class):
         )
 
     def sell_all_stocks(self):
-        # 매도 로직 구현 (여기서는 로그만 출력)
         self.buysell_log.append("15시가 되어 모든 주식을 매도합니다.")
 
 
