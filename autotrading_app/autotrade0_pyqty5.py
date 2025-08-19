@@ -32,7 +32,7 @@ class MyWindow(QMainWindow, form_class):
 
     def start_trading(self):
         self.timer.start(1000 * 60)  # 1분마다 check_market_time 호출
-        self.trade_timer.start(1000)  # 1초마다 trade_stocks 호출
+        self.trade_timer.start(1000 * 17)  # 17초마다 trade_stocks 호출
 
     def stop_trading(self):
         self.timer.stop()
@@ -66,19 +66,15 @@ class MyWindow(QMainWindow, form_class):
                         f"[{now}] [{code}] [{name}] [{current_price}]"
                     )
 
-                    # 변동성 돌파 전략 계산
-                    yesterday_data = stock.get_market_ohlcv_by_date(
-                        datetime.datetime.now().strftime("%Y%m%d"),
-                        datetime.datetime.now().strftime("%Y%m%d"),
-                        code,
-                    )
-                    if not yesterday_data.empty:
-                        high = yesterday_data["고가"][0]
-                        low = yesterday_data["저가"][0]
-                        close = yesterday_data["종가"][0]
+                    # 직전 거래일 데이터 조회
+                    yesterday_data = get_yesterday_ohlcv(code)
+                    if yesterday_data is not None:
+                        high = yesterday_data["고가"]
+                        low = yesterday_data["저가"]
+                        close = yesterday_data["종가"]
                         target_price = close + (high - low) * k_value
 
-                        if current_price > target_price:  # 조건 충족 시 매수
+                        if current_price > target_price:
                             self.buy_stock(code, current_price, 1)
 
                 except Exception as e:
@@ -95,6 +91,21 @@ class MyWindow(QMainWindow, form_class):
 
     def sell_all_stocks(self):
         self.buysell_log.append("15시가 되어 모든 주식을 매도합니다.")
+
+
+def get_yesterday_ohlcv(code):
+    today = datetime.datetime.now().strftime("%Y%m%d")
+    # 최근 5영업일 데이터 조회
+    df = stock.get_market_ohlcv_by_date("20240101", today, code)
+
+    if df.empty:
+        return None
+
+    # 마지막 행이 오늘일 수 있으므로 직전 거래일은 -2번째 인덱스
+    if len(df) >= 2:
+        return df.iloc[-2]  # 직전 거래일
+    else:
+        return df.iloc[-1]  # 데이터가 하루뿐일 경우 예외 처리
 
 
 if __name__ == "__main__":
