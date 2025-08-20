@@ -5,6 +5,7 @@ from PyQt5.QtCore import QTimer, QTime
 from pykiwoom.kiwoom import Kiwoom
 from pykrx import stock
 import datetime
+import time
 
 # Qt Designer로 생성한 gui 파일 로드
 form_class = uic.loadUiType(r"gui.ui")[0]
@@ -32,7 +33,7 @@ class MyWindow(QMainWindow, form_class):
 
     def start_trading(self):
         self.timer.start(1000 * 60)  # 1분마다 check_market_time 호출
-        self.trade_timer.start(1000 * 17)  # 17초마다 trade_stocks 호출
+        self.trade_timer.start(1000 * 5)  # 5초마다 trade_stocks 호출
 
     def stop_trading(self):
         self.timer.stop()
@@ -46,66 +47,149 @@ class MyWindow(QMainWindow, form_class):
             self.sell_all_stocks()
 
     def trade_stocks(self):
+        # 직전 거래일 조회
+        yesterday = stock.get_nearest_business_day_in_a_week(
+            datetime.datetime.now().strftime("%Y%m%d")
+        )
         codes = self.code_list.text().split(",")  # 종목 코드 분리
         k_value = float(self.k_value.text())  # K 값 입력 받기
 
         for code in codes:
-            code = code.strip()
-            if code:
-                try:
-                    # 현재가 및 종목명 조회
-                    data = self.kiwoom.block_request(
-                        "opt10001", 종목코드=code, output="주식기본정보", next=0
-                    )
-                    name = data["종목명"][0]
-                    current_price = int(data["현재가"][0].replace(",", ""))
+            if code.strip():
+                current_price_raw = self.kiwoom.block_request(
+                    "opt10001", 종목코드=code.strip(), output="주식기본정보", next=0
+                )["현재가"][0].replace(",", "")
+                current_price = int(current_price_raw)
 
-                    # === 현재가 로그 출력 ===
-                    now = datetime.datetime.now().strftime("%H:%M:%S")
-                    self.textboard.append(
-                        f"[{now}] [{code}] [{name}] [{current_price}]"
-                    )
+                # 현재가가 음수인 경우 양수로 변환
+                if current_price < 0:
+                    current_price = abs(current_price)
 
-                    # 직전 거래일 데이터 조회
-                    yesterday_data = get_yesterday_ohlcv(code)
-                    if yesterday_data is not None:
-                        high = yesterday_data["고가"]
-                        low = yesterday_data["저가"]
-                        close = yesterday_data["종가"]
-                        target_price = close + (high - low) * k_value
+                name = self.kiwoom.block_request(
+                    "opt10001", 종목코드=code.strip(), output="주식기본정보", next=0
+                )["종목명"][0]
+                self.textboard.append(
+                    f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [{code}] [{name}] [현재가: {current_price}]"
+                )
 
-                        if current_price > target_price:
-                            self.buy_stock(code, current_price, 1)
+                yesterday_data = stock.get_market_ohlcv_by_date(
+                    yesterday, yesterday, code.strip()
+                )
+                if not yesterday_data.empty:
+                    high = yesterday_data["고가"][0]
+                    low = yesterday_data["저가"][0]
+                    close = yesterday_data["종가"][0]
+                    target_price = close + (high - low) * k_value
 
-                except Exception as e:
-                    self.textboard.append(f"[Error] {code}: {e}")
+                    if current_price > target_price:  # 변동성 돌파 전략에 따라 매수
+                        self.buy_stock(code.strip(), current_price, 1)
 
-    def buy_stock(self, code, price, quantity):
-        # 매수 로직 (현재는 로그만 출력)
-        name = self.kiwoom.block_request(
-            "opt10001", 종목코드=code, output="주식기본정보", next=0
-        )["종목명"][0]
-        self.buysell_log.append(
-            f"[매수] [{code}] [{name}] [가격: {price}] [수량: {quantity}]"
+    def buy_stock(self, code, price, quantity, market=False):
+        """
+        market=True  -> 시장가(호가구분 '03', price=0)
+        market=False -> 지정가(호가구분 '00', price=지정가)
+        """
+        # 계좌번호 (여러 계좌가 반환되면 첫 번째 사용)
+        acc_list = self.kiwoom.GetLoginInfo("ACCNO")
+        account = acc_list[0] if isinstance(acc_list, list) else acc_list.split(";")[0]
+
+        # 호가구분/가격
+        hoga_gb = "03" if market else "00"
+        order_price = 0 if market else int(price)
+
+        # 위치 인자로 호출!
+        ret = self.kiwoom.SendOrder(
+            "신규매수",  # rqname
+            "0101",  # screen_no (임의 4자리 문자열)
+            account,  # acc_no
+            1,  # order_type: 1 신규매수
+            code,  # code
+            int(quantity),  # qty
+            int(order_price),  # price
+            hoga_gb,  # hoga_gb
+            "",  # org_order_no (신규주문은 빈 문자열)
         )
 
-    def sell_all_stocks(self):
-        self.buysell_log.append("15시가 되어 모든 주식을 매도합니다.")
+        # 결과 로그
+        if ret == 0:
+            self.buysell_log.append(
+                f"[매수주문성공] [{code}] [가격:{order_price}] [수량:{quantity}] [시장가:{market}]"
+            )
+        else:
+            self.buysell_log.append(f"[매수주문실패] [{code}] ret={ret}")
 
+    def sell_all_stocks(self, market=True):
+        """
+        보유 종목 전량 매도
+        market=True  -> 시장가
+        market=False -> 지정가(현재가 기준)
+        """
+        acc_list = self.kiwoom.GetLoginInfo("ACCNO")
+        account = acc_list[0] if isinstance(acc_list, list) else acc_list.split(";")[0]
 
-def get_yesterday_ohlcv(code):
-    today = datetime.datetime.now().strftime("%Y%m%d")
-    # 최근 5영업일 데이터 조회
-    df = stock.get_market_ohlcv_by_date("20240101", today, code)
+        # 잔고 조회 (opw00018: 계좌평가잔고내역요청)
+        # output 이름은 '계좌평가잔고개별합산'이 일반적입니다.
+        df = self.kiwoom.block_request(
+            "opw00018",
+            계좌번호=account,
+            비밀번호="",  # 비밀번호 저장 설정 시 공란 가능
+            비밀번호입력매체구분="00",
+            조회구분="2",  # 1: 합산, 2: 개별
+            output="계좌평가잔고개별합산",
+            next=0,
+        )
 
-    if df.empty:
-        return None
+        if df is None or df.empty:
+            self.buysell_log.append("[INFO] 매도 대상 잔고가 없습니다.")
+            return
 
-    # 마지막 행이 오늘일 수 있으므로 직전 거래일은 -2번째 인덱스
-    if len(df) >= 2:
-        return df.iloc[-2]  # 직전 거래일
-    else:
-        return df.iloc[-1]  # 데이터가 하루뿐일 경우 예외 처리
+        for i in range(len(df)):
+            # 종목코드 컬럼명이 환경마다 다를 수 있어 안전하게 가져오기
+            code_col = (
+                "종목코드"
+                if "종목코드" in df.columns
+                else ("종목번호" if "종목번호" in df.columns else None)
+            )
+            if code_col is None:
+                continue
+
+            code = str(df.iloc[i][code_col]).strip().lstrip("A")
+            qty_raw = str(df.iloc[i].get("보유수량", "0")).replace(",", "").strip()
+            qty = int(qty_raw) if qty_raw.isdigit() else 0
+            if qty <= 0:
+                continue
+
+            # 지정가 매도 가격: 현재가(양수화)
+            if not market:
+                cur = self.kiwoom.block_request(
+                    "opt10001", 종목코드=code, output="주식기본정보", next=0
+                )
+                cur_price = abs(int(str(cur["현재가"][0]).replace(",", "")))
+                price_to_sell = cur_price
+                hoga_gb = "00"  # 지정가
+            else:
+                price_to_sell = 0
+                hoga_gb = "03"  # 시장가
+
+            # 위치 인자로 호출!
+            ret = self.kiwoom.SendOrder(
+                "신규매도",  # rqname
+                "0102",  # screen_no
+                account,  # acc_no
+                2,  # order_type: 2 신규매도
+                code,  # code
+                int(qty),  # qty
+                int(price_to_sell),  # price
+                hoga_gb,  # hoga_gb
+                "",  # org_order_no
+            )
+
+            if ret == 0:
+                self.buysell_log.append(
+                    f"[매도주문성공] [{code}] [수량:{qty}] [시장가:{market}] [가격:{price_to_sell}]"
+                )
+            else:
+                self.buysell_log.append(f"[매도주문실패] [{code}] ret={ret}")
 
 
 if __name__ == "__main__":
