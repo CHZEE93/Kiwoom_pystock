@@ -20,6 +20,9 @@ class MyWindow(QMainWindow, form_class):
         self.kiwoom = Kiwoom()
         self.kiwoom.CommConnect(block=True)
 
+        # 매수 기록 저장용 딕셔너리
+        self.bought_stocks = {}
+
         # 버튼 연결
         self.button_start.clicked.connect(self.start_trading)
         self.button_stop.clicked.connect(self.stop_trading)
@@ -41,48 +44,75 @@ class MyWindow(QMainWindow, form_class):
 
     def check_market_time(self):
         now = QTime.currentTime()
-        if now.toString("HHmm") >= "1500":  # 15시가 되면 매도
+        if now.toString("HHmm") >= "1500":  # 15시가 되면 매도 및 정지
             self.timer.stop()
             self.trade_timer.stop()
             self.sell_all_stocks()
+            self.textboard.append(
+                f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 장 마감: 매도 실행 및 현재가 조회 중지"
+            )
 
     def trade_stocks(self):
+        # 장 마감 이후에는 현재가 조회 및 매수 중단
+        now = QTime.currentTime()
+        if now.toString("HHmm") >= "1500":
+            self.textboard.append(
+                f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 장 마감: 현재가 조회 중지"
+            )
+            return
+
+        # 오늘 날짜
+        today = datetime.datetime.now().strftime("%Y%m%d")
+
         # 직전 거래일 조회
-        yesterday = stock.get_nearest_business_day_in_a_week(
-            datetime.datetime.now().strftime("%Y%m%d")
-        )
+        yesterday = stock.get_nearest_business_day_in_a_week(today)
         codes = self.code_list.text().split(",")  # 종목 코드 분리
         k_value = float(self.k_value.text())  # K 값 입력 받기
 
         for code in codes:
-            if code.strip():
-                current_price_raw = self.kiwoom.block_request(
-                    "opt10001", 종목코드=code.strip(), output="주식기본정보", next=0
-                )["현재가"][0].replace(",", "")
-                current_price = int(current_price_raw)
+            code = code.strip()
+            if code:
+                try:
+                    # 이미 오늘 매수한 종목이면 건너뛰기
+                    if code in self.bought_stocks and self.bought_stocks[code] == today:
+                        continue
 
-                # 현재가가 음수인 경우 양수로 변환
-                if current_price < 0:
-                    current_price = abs(current_price)
+                    # 현재가 조회
+                    data = self.kiwoom.block_request(
+                        "opt10001", 종목코드=code, output="주식기본정보", next=0
+                    )
+                    current_price = int(data["현재가"][0].replace(",", ""))
 
-                name = self.kiwoom.block_request(
-                    "opt10001", 종목코드=code.strip(), output="주식기본정보", next=0
-                )["종목명"][0]
-                self.textboard.append(
-                    f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [{code}] [{name}] [현재가: {current_price}]"
-                )
+                    # 현재가가 음수이면 양수로 변환
+                    if current_price < 0:
+                        current_price = abs(current_price)
 
-                yesterday_data = stock.get_market_ohlcv_by_date(
-                    yesterday, yesterday, code.strip()
-                )
-                if not yesterday_data.empty:
-                    high = yesterday_data["고가"][0]
-                    low = yesterday_data["저가"][0]
-                    close = yesterday_data["종가"][0]
-                    target_price = close + (high - low) * k_value
+                    name = data["종목명"][0]
+                    self.textboard.append(
+                        f"[{datetime.datetime.now().strftime('%H:%M:%S')}] "
+                        f"[{code}] [{name}] [현재가: {current_price}]"
+                    )
 
-                    if current_price > target_price:  # 변동성 돌파 전략에 따라 매수
-                        self.buy_stock(code.strip(), current_price, 1)
+                    # 직전 거래일 데이터 조회
+                    yesterday_data = stock.get_market_ohlcv_by_date(
+                        yesterday, yesterday, code
+                    )
+                    if not yesterday_data.empty:
+                        high = yesterday_data["고가"][0]
+                        low = yesterday_data["저가"][0]
+                        close = yesterday_data["종가"][0]
+                        target_price = close + (high - low) * k_value
+
+                        # 변동성 돌파 전략 실행
+                        if current_price > target_price:
+                            # 매수 주문
+                            self.buy_stock(code, current_price, 1)
+
+                            # 매수 성공 시 오늘 날짜 기록
+                            self.bought_stocks[code] = today
+
+                except Exception as e:
+                    self.textboard.append(f"[Error] {code}: {e}")
 
     def buy_stock(self, code, price, quantity, market=False):
         """
