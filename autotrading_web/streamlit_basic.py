@@ -2,6 +2,9 @@ import streamlit as st
 import pandas as pd
 import datetime
 from PIL import Image
+import matplotlib.pyplot as plt
+import numpy as np
+import plotly.express as px
 
 st.header("이것은 헤더입니다.")
 
@@ -85,3 +88,22 @@ uploaded_file = st.file_uploader("이미지 파일을 업로드해주세요", ty
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
     st.image(image, caption="업로드된 이미지", use_column_width=True)
+
+# 데이터 생성
+x = np.linspace(0, 10, 30)
+y = np.sin(x)
+
+# Matplotlib pyplot
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.plot(x, y)
+
+# Streamlit 애플리케이션에 그래프 표시
+st.pyplot(fig)
+
+df = px.data.iris()
+
+# Plotly Express를 사용한 그래프 생성
+fig = px.scatter(df, x="sepal_width", y="sepal_length", color="species")
+
+# Streamlit 애플리케이션에 그래프 표시
+st.plotly_chart(fig)
